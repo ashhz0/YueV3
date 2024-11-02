@@ -1,92 +1,139 @@
-const fs = require("fs");
-const connectDB = require("./bot/connectDB");
-const path = require("path");
-const ora = require("ora");
-const { handleAddEvent } = require("./bot/events/addEvent");
-const { handleKickEvent } = require("./bot/events/kickEvent");
+/*!
+ * YueV3
+ * Copyright (c) 2024 Rui Reogo
+ * ISC Licensed
+ */
+ 
+/**
+ * Dependencies.
+ */
 
-const configPath = "config.json";
+const promisify = require("node:promisify");
+const debug     = require("debug")("yue:main");
+const { exec }  = require("child_process");
+const fs        = require("fs-extra");
+const login     = promisify(require("./bot/login"));
+const path      = require("path");
 
-// Load config
-const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
-const commandPrefix = config.commandPrefix || "/";
-const commandPath = path.join(__dirname, "bot", "commands");
+/**
+ * Setup.
+ */
 
-// Connect to SQLite database
-// connectDB.connectDB();
+global.YueV3 = {
+    startTime: new Date(),
+    
+    paths: {
+        config: path.join(__dirname, "config.json"),
+        commandsPath: path.join(__dirname, "bot", "commands"),
+        eventsPath: path.join(__dirname, "bot", "events"),
+        statePath: path.join(__dirname, "appstate.json")
+    },
+    
+    get config() {
+        return fs.readJSONSync(this.paths.config);
+    },
+    
+    commandPrefix: this.config.commandPrefix,
+    botCommands: {},
+    botEvents: {},
+};
 
-// Bot logic
-const botCommands = {};
+/**
+ * Events and commands loader.
+ */
 
-// isAdmin function
-function isAdmin(userId) {
-  return config.admins.some((admin) => admin === userId);
-}
+const loadCommands = async function() {
+    const commandFiles = fs
+        .readdirSync(global.YueV3.paths.commandsPath)
+        .filter((file) => file.endsWith(".js"));
 
-module.exports = {
-  getPrefix: getPrefix,
-}
+    commandFiles.forEach((file) => {
+        try {
+            const commandName   = path.basename(file, ".js");
+            const startTime     = new Date();
+            const commandModule = require(path.join(
+                global.YueV3.paths.commandsPath, file
+            ));
+            const endTime       = new Date();
 
-function getPrefix() {
-  return config.commandPrefix || '/'; // Default to "/" if not specified in config
-}
+            global.YueV3.botCommands[commandName] = commandModule;
+            
+            debug(`Loaded ${commandName} - (${Math.abs(startTime - endTime)}`);
+        } catch (err) {
+            if (err.code === "MODULE_NOT_FOUND") {
+                const missingModule = err.message.split("'")[1];
+                exec(`npm i ${missingModule}`, function(err) {
+                   if (!err) {
+                       const commandName   = path.basename(file, ".js");
+                       const startTime     = new Date();
+                       const commandModule = require(path.join(
+                           global.YueV3.paths.commandsPath, file
+                       ));
+                       const endTime       = new Date();
+                       
+                       global.YueV3.botCommands[commandName] = commandModule;
+                       
+                       debug(`Loaded ${commandName} - (${Math.abs(startTime - endTime)}`);
+                   };
+                });
+            };
+        };
+    });
+};
 
-// loadCommands function
-function loadCommands() {
-  const commandFiles = fs
-    .readdirSync(commandPath)
-    .filter((file) => file.endsWith(".js"));
+const loadEvents = async function() {
+    const eventFiles = fs
+        .readdirSync(global.YueV3.paths.eventsPath)
+        .filter((file) => file.endsWith(".js"));
 
-  commandFiles.forEach((file) => {
-    const commandName = path.basename(file, ".js");
-    const commandModule = require(path.join(commandPath, file));
+    eventFiles.forEach((file) => {
+        try {
+            const eventName   = path.basename(file, ".js");
+            const startTime   = new Date();
+            const eventModule = require(path.join(
+                global.YueV3.paths.eventsPath, file
+            ));
+            const endTime     = new Date();
 
-    botCommands[commandName] = ({ api, event, args, box }) => {
-      const userId = event.senderID;
-      const commandConfig = commandModule.config || {};
-      const commandRole = commandConfig.role || 0;
+            global.YueV3.botCommands[commandName] = commandModule;
+            
+            debug(`Loaded ${eventName} - (${Math.abs(startTime - endTime)}`);
+        } catch (err) {
+            if (err.code === "MODULE_NOT_FOUND") {
+                const missingModule = err.message.split("'")[1];
+                exec(`npm i ${missingModule}`, function(err) {
+                   if (!err) {
+                       const commandName   = path.basename(file, ".js");
+                       const startTime     = new Date();
+                       const commandModule = require(path.join(
+                           global.paths.commandsPath, file
+                       ));
+                       const endTime       = new Date();
+                       
+                       global.YueV3.botCommands[commandName] = commandModule;
+                       
+                       debug(`Loaded ${eventName} - (${Math.abs(startTime - endTime)}`);
+                   };
+                });
+            };
+        };
+    });
+};
 
-      if (commandRole === 0 || (commandRole === 1 && isAdmin(userId))) {
-        commandModule.run({ api, event, args, box });
-      } else {
-        box.reply("You do not have permission to use this command.");
-      }
-    };
-  });
-}
 
-loadCommands();
-
-// Handle bot events
 function handleBotEvents(api, event) {
-  // Event: Bot added to a group
-  if (event.type === "event" && event.logMessageType === "log:subscribe") {
-    handleAddEvent(api, event);
-  }
-
-  // Event: Bot kicked from a group
-  if (event.type === "event" && event.logMessageType === "log:unsubscribe") {
-    handleKickEvent(api, event);
-  }
-
-  // Handle other bot events as needed
-  // ...
   const react = (emoji) => {
     api.setMessageReaction(emoji, event.messageID, () => {}, true);
   };
-
   const reply = (msg) => {
     api.sendMessage(msg, event.threadID, event.messageID);
   };
-
   const add = (uid) => {
     api.addUserToGroup(uid, event.threadID);
   };
-
   const kick = (uid) => {
     api.removeUserFromGroup(uid, event.threadID);
   };
-
   const send = (msg) => {
     api.sendMessage(msg, event.threadID);
   };
@@ -116,38 +163,37 @@ function handleBotEvents(api, event) {
         .split(" ");
 
       if (botCommands[command]) {
-        botCommands[command]({ api, event, args, box });
+        botCommands[command].run({ api, event, args, box });
       } else {
-        api.sendMessage("Invalid command.", event.threadID, event.messageID);
+        box.reply("Command doesnt exist.")
       }
     }
   } catch (error) {
-    console.error("Error occurred while executing command:", error);
-    // Handle the error or log it to your preferred logging service
+    debug(`Error occured while executing command. ${error}`);
   }
 }
 
-// Create an API instance
-const login = require("fca-unofficial");
-login(
-  { appState: JSON.parse(fs.readFileSync("appstate.json", "utf8")) },
-  (err, api) => {
-    if (err) return console.error(err);
+const main = async function() {
+    console.log("YueV3 :>");
+    console.log("Forked by @ashhz0");
+    console.log("Made by @ruingl");
+    
+    await loadCommands();
+    await loadEvents();
+    
+    const appState = await fs.readJSON(global.YueV3.paths.statePath);
+    const api = await login({ appState });
+    
+    if (!api) {
+        debug(`ERR! Cant login.`);
+        process.exit();
+    } else {
+        api.listenMqtt((err, event) => {
+            if (!err) return;
+            
+            handleBotEvents(api, event);
+        });
+    };
+};
 
-    // Save app state after successful login
-    fs.writeFileSync("appstate.json", JSON.stringify(api.getAppState()));
-
-    // Start listening for bot events after successful login
-    api.listen((listenErr, event) => {
-      if (listenErr) return console.error(listenErr);
-
-      // Call the function to handle bot events
-      handleBotEvents(api, event);
-    });
-  },
-);
-
-function isAdmin(userId) {
-  const admins = config.admins || [];
-  return admins.some((admin) => admin === userId);
-}
+main();
